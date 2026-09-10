@@ -125,6 +125,7 @@ export const VoiceStage: React.FC<VoiceStageProps> = ({
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationFrameRef = useRef<number | null>(null);
+  const fallbackMicStreamRef = useRef<MediaStream | null>(null);
 
   const isOwner = currentUser.role === 'owner' || currentUser.id === 'user-mod';
 
@@ -150,12 +151,17 @@ export const VoiceStage: React.FC<VoiceStageProps> = ({
         return;
       }
 
+      let audioStream: MediaStream | null = null;
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, sampleRate: 48000, channelCount: 2 },
+        });
         if (!isMounted) {
           stream.getTracks().forEach((t) => t.stop());
           return;
         }
+        audioStream = stream;
+        fallbackMicStreamRef.current = stream;
 
         const AudioContextClass =
           window.AudioContext ||
@@ -209,6 +215,10 @@ export const VoiceStage: React.FC<VoiceStageProps> = ({
       }
       if (audioContextRef.current) {
         audioContextRef.current.close().catch(() => {});
+      }
+      if (fallbackMicStreamRef.current) {
+        fallbackMicStreamRef.current.getTracks().forEach((t) => t.stop());
+        fallbackMicStreamRef.current = null;
       }
     };
   }, [hasTopLevelMic, voiceState.isMuted]);

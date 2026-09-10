@@ -32,14 +32,91 @@ export function useMODcordSocket(
   const wsRef = useRef<WebSocket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [typingUsers, setTypingUsers] = useState<Record<string, string[]>>({});
-  const typingTimeoutsRef = useRef<Record<string, NodeJS.Timeout>>({});
+  const typingTimeoutsRef = useRef<Record<string, any>>({});
+
+  // Keep latest callbacks in refs to avoid re-binding and stale closures
+  const callbacksRef = useRef({
+    onSyncInit,
+    onNewMessage,
+    onUpdateMessage,
+    onDeleteMessage,
+    onUpdateUsers,
+    onUpdateServers,
+    onVoiceParticipantsUpdate,
+    onAudioReceived,
+    onWebRtcSignal,
+    onMovedByAdmin,
+    onForcedMute,
+    onForcedDisconnect,
+    onScreenShareStarted,
+    onScreenShareStopped,
+    onScreenFrameReceived,
+  });
+
+  useEffect(() => {
+    callbacksRef.current = {
+      onSyncInit,
+      onNewMessage,
+      onUpdateMessage,
+      onDeleteMessage,
+      onUpdateUsers,
+      onUpdateServers,
+      onVoiceParticipantsUpdate,
+      onAudioReceived,
+      onWebRtcSignal,
+      onMovedByAdmin,
+      onForcedMute,
+      onForcedDisconnect,
+      onScreenShareStarted,
+      onScreenShareStopped,
+      onScreenFrameReceived,
+    };
+  });
+
+  const currentUserRef = useRef(currentUser);
+  currentUserRef.current = currentUser;
 
   useEffect(() => {
     let active = true;
     let reconnectTimeout: any = null;
+    let reconnectAttempts = 0;
+    const MAX_RECONNECT_ATTEMPTS = 15;
+
+    function cleanupSocket() {
+      if (wsRef.current) {
+        // Strip listeners first to prevent stray event firing
+        wsRef.current.onopen = null;
+        wsRef.current.onmessage = null;
+        wsRef.current.onerror = null;
+        wsRef.current.onclose = null;
+        if (
+          wsRef.current.readyState === WebSocket.OPEN ||
+          wsRef.current.readyState === WebSocket.CONNECTING
+        ) {
+          wsRef.current.close();
+        }
+        wsRef.current = null;
+      }
+    }
+
+    function scheduleReconnect() {
+      if (!active) return;
+      setIsConnected(false);
+      if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+        console.warn('[WebSocket] Max reconnect attempts reached. Waiting for next user event.');
+        return;
+      }
+      reconnectAttempts++;
+      // Exponential backoff: 1s, 1.5s, 2.25s, ... max 10s
+      const delay = Math.min(1000 * Math.pow(1.5, reconnectAttempts - 1), 10000);
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      reconnectTimeout = setTimeout(connect, delay);
+    }
 
     function connect() {
       if (!active) return;
+      cleanupSocket();
+
       try {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const url = `${protocol}//${window.location.host}/ws`;
@@ -47,13 +124,17 @@ export function useMODcordSocket(
         wsRef.current = ws;
 
         ws.onopen = () => {
-          if (!active) return;
+          if (!active) {
+            cleanupSocket();
+            return;
+          }
+          reconnectAttempts = 0;
           setIsConnected(true);
           // Send identify event
           ws.send(
             JSON.stringify({
               event: 'auth:identify',
-              payload: currentUser,
+              payload: currentUserRef.current,
             })
           );
         };
@@ -62,42 +143,43 @@ export function useMODcordSocket(
           if (!active) return;
           try {
             const { event: evt, payload } = JSON.parse(event.data);
+            const cbs = callbacksRef.current;
 
             if (evt === 'sync:init') {
-              onSyncInit(payload);
+              cbs.onSyncInit(payload);
             } else if (evt === 'message:new') {
-              onNewMessage(payload);
-              if (payload.authorId !== currentUser.id) {
+              cbs.onNewMessage(payload);
+              if (payload.authorId !== currentUserRef.current.id) {
                 soundEffects.playMessagePing();
               }
             } else if (evt === 'message:update') {
-              onUpdateMessage(payload);
+              cbs.onUpdateMessage(payload);
             } else if (evt === 'message:deleted') {
-              onDeleteMessage(payload);
+              cbs.onDeleteMessage(payload);
             } else if (evt === 'users:update') {
-              onUpdateUsers(payload);
+              cbs.onUpdateUsers(payload);
             } else if (evt === 'servers:update') {
-              onUpdateServers(payload);
+              cbs.onUpdateServers(payload);
             } else if (evt === 'voice:participants') {
-              onVoiceParticipantsUpdate(payload.channelId, payload.participants);
+              cbs.onVoiceParticipantsUpdate(payload.channelId, payload.participants);
             } else if (evt === 'voice:audio_received') {
-              if (onAudioReceived && payload.userId !== currentUser.id) {
-                onAudioReceived(payload.userId, payload.audio);
+              if (cbs.onAudioReceived && payload.userId !== currentUserRef.current.id) {
+                cbs.onAudioReceived(payload.userId, payload.audio);
               }
             } else if (evt === 'webrtc:signal') {
-              onWebRtcSignal?.(payload.fromUserId, payload.signal);
+              cbs.onWebRtcSignal?.(payload.fromUserId, payload.signal);
             } else if (evt === 'voice:moved_by_admin') {
-              onMovedByAdmin?.(payload.targetChannelId, payload.channelName, payload.movedBy);
+              cbs.onMovedByAdmin?.(payload.targetChannelId, payload.channelName, payload.movedBy);
             } else if (evt === 'voice:forced_mute') {
-              onForcedMute?.(payload.isMuted, payload.by);
+              cbs.onForcedMute?.(payload.isMuted, payload.by);
             } else if (evt === 'voice:forced_disconnect') {
-              onForcedDisconnect?.(payload.by);
+              cbs.onForcedDisconnect?.(payload.by);
             } else if (evt === 'screen:started') {
-              onScreenShareStarted?.(payload);
+              cbs.onScreenShareStarted?.(payload);
             } else if (evt === 'screen:stopped') {
-              onScreenShareStopped?.(payload);
+              cbs.onScreenShareStopped?.(payload);
             } else if (evt === 'screen:frame_received') {
-              onScreenFrameReceived?.(payload);
+              cbs.onScreenFrameReceived?.(payload);
             } else if (evt === 'typing') {
               const { channelId, userName } = payload;
               setTypingUsers((prev) => {
@@ -123,22 +205,21 @@ export function useMODcordSocket(
               }, 3000);
             }
           } catch (err) {
-            console.error('Error parsing WS message:', err);
+            console.error('[WebSocket] Error parsing WS message:', err);
           }
         };
 
         ws.onclose = () => {
           if (!active) return;
-          setIsConnected(false);
-          reconnectTimeout = setTimeout(connect, 2000);
+          scheduleReconnect();
         };
 
         ws.onerror = () => {
-          ws.close();
+          // Native browser will automatically invoke onclose after onerror
         };
       } catch (err) {
-        console.error('WebSocket connection error:', err);
-        reconnectTimeout = setTimeout(connect, 2000);
+        console.error('[WebSocket] Connection initialization error:', err);
+        scheduleReconnect();
       }
     }
 
@@ -146,10 +227,18 @@ export function useMODcordSocket(
 
     return () => {
       active = false;
-      if (reconnectTimeout) clearTimeout(reconnectTimeout);
-      if (wsRef.current) {
-        wsRef.current.close();
+      if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+        reconnectTimeout = null;
       }
+      cleanupSocket();
+      setIsConnected(false);
+
+      // Clear pending typing timeouts
+      Object.keys(typingTimeoutsRef.current).forEach((k) => {
+        clearTimeout(typingTimeoutsRef.current[k]);
+      });
+      typingTimeoutsRef.current = {};
     };
   }, [currentUser.id]);
 
@@ -268,7 +357,6 @@ export function useMODcordSocket(
     [sendEvent]
   );
 
-  // Admin exclusive: Force move user to a voice channel
   const forceMoveUser = useCallback(
     (targetUserId: string, targetChannelId: string) => {
       sendEvent('voice:force_move', { targetUserId, targetChannelId });
@@ -276,7 +364,6 @@ export function useMODcordSocket(
     [sendEvent]
   );
 
-  // Admin exclusive: Force mute user
   const forceMuteUser = useCallback(
     (targetUserId: string, isMuted: boolean) => {
       sendEvent('voice:force_mute', { targetUserId, isMuted });
@@ -284,7 +371,6 @@ export function useMODcordSocket(
     [sendEvent]
   );
 
-  // Admin exclusive: Force disconnect user from voice
   const forceDisconnectUser = useCallback(
     (targetUserId: string) => {
       sendEvent('voice:force_disconnect', { targetUserId });
@@ -292,24 +378,17 @@ export function useMODcordSocket(
     [sendEvent]
   );
 
-  // Screen share controls
-  const startScreenShare = useCallback(
-    (channelId: string, meta?: any) => {
-      sendEvent('screen:start', { channelId, meta });
-    },
-    [sendEvent]
-  );
+  const startScreenShare = useCallback(() => {
+    sendEvent('screen:start', {});
+  }, [sendEvent]);
 
-  const stopScreenShare = useCallback(
-    (channelId: string) => {
-      sendEvent('screen:stop', { channelId });
-    },
-    [sendEvent]
-  );
+  const stopScreenShare = useCallback(() => {
+    sendEvent('screen:stop', {});
+  }, [sendEvent]);
 
   const sendScreenFrame = useCallback(
-    (channelId: string, frame: string) => {
-      sendEvent('screen:frame', { channelId, frame });
+    (frame: string) => {
+      sendEvent('screen:frame', { frame });
     },
     [sendEvent]
   );
@@ -341,5 +420,3 @@ export function useMODcordSocket(
     sendScreenFrame,
   };
 }
-
-export const useModeCordSocket = useMODcordSocket;
