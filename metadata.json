@@ -1,0 +1,6 @@
+{
+  "name": "MODcord",
+  "description": "تطبيق محادثة صوتية ونصية متقدم وبديل لـ Discord موجه للمجتمع العربي يركز على الخصوصية والأمان",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
